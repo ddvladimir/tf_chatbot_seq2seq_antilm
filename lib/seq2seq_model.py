@@ -270,13 +270,16 @@ class Seq2SeqModel(object):
     
     # initialize 
     init_inputs = [encoder_inputs, decoder_inputs, target_weights, bucket_id]
-    sent_max_length = args.buckets[-1][0]
+    sent_max_length = args.buckets[-1][0] - 1
     resp_tokens, resp_txt = self.logits2tokens(encoder_inputs, rev_vocab, sent_max_length, reverse=True)
     if debug: print("[INPUT]:", resp_txt)
     
     # Initialize
+    self.dummy_dialogs.append([8, 9, 51, 4])
+    
     ep_rewards, ep_step_loss, enc_states = [], [], []
     ep_encoder_inputs, ep_target_weights, ep_bucket_id = [], [], []
+    ep_tokens = [['3']]
 
     # [Episode] per episode = n steps, until break
     while True:
@@ -307,26 +310,29 @@ class Seq2SeqModel(object):
       r1 = -np.mean(r1) if r1 else 0
       
       # r2: Information Flow
+
       if len(enc_states) < 2:
         r2 = 0
       else:
         vec_a, vec_b = enc_states[-2], enc_states[-1]
         r2 = sum(vec_a*vec_b) / sum(abs(vec_a)*abs(vec_b))
-        r2 = -log(r2)
-      
-      # r3: Semantic Coherence
-      r3 = -self.logProb(session, args.buckets, resp_tokens, ep_encoder_inputs[-1])
+        r2 = -log(abs(r2))
+        
 
+      # r3: Semantic Coherence
+      r3 = -self.logProb(session, args.buckets, resp_tokens, ep_tokens[-1]) #ep_encoder_inputs[-1])
+      ep_tokens.append(resp_tokens)
       # Episode total reward
       R = 0.25*r1 + 0.25*r2 + 0.5*r3
-      rewards.append(R)
+      ep_rewards.append(R)
+      print ('R: ', r1, r2, r3, R)
       #----------------------------------------------------
       if (resp_txt in self.dummy_dialogs) or (len(resp_tokens) <= 3) or (encoder_inputs in ep_encoder_inputs): 
         break # check if dialog ended
       
     # gradient decent according to batch rewards
     rto = (max(ep_step_loss) - min(ep_step_loss)) / (max(ep_rewards) - min(ep_rewards))
-    advantage = [mp.mean(ep_rewards)*rto] * len(args.buckets)
+    advantage = [np.mean(ep_rewards)*rto] * len(args.buckets)
     _, step_loss, _ = self.step(session, init_inputs[0], init_inputs[1], init_inputs[2], init_inputs[3],
               training=True, force_dec_input=False, advantage=advantage)
     
@@ -343,7 +349,6 @@ class Seq2SeqModel(object):
     bucket_id = min([b for b in range(len(buckets)) if buckets[b][0] > len(tokens_a)])
     feed_data = {bucket_id: [(tokens_a, tokens_b)]}
     encoder_inputs, decoder_inputs, target_weights = self.get_batch(feed_data, bucket_id)
-
     # step
     _, _, output_logits = self.step(session, encoder_inputs, decoder_inputs, target_weights,
                         bucket_id, training=False, force_dec_input=True)
@@ -364,7 +369,8 @@ class Seq2SeqModel(object):
     if data_utils.EOS_ID in tokens:
       eos = tokens.index(data_utils.EOS_ID)
       tokens = tokens[:eos]
-    txt = [rev_vocab[t] for t in tokens]
+    #index out of rante check
+    txt = [rev_vocab[t] for t in tokens if t < len(rev_vocab)]
     if sent_max_length:
       tokens, txt = tokens[:sent_max_length], txt[:sent_max_length]
     return tokens, txt
